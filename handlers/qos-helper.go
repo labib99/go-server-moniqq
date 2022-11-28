@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Load data from CSV file
@@ -377,7 +378,8 @@ func rating(param string, value, bandwidth float64) (index float32, category str
 
 // Get All docs from a collection in Mongodb
 func getAllDocs(coll *mongo.Collection, results any) any {
-	cursor, err := coll.Find(context.Background(), bson.D{{}})
+	opt := options.Find().SetSort(bson.D{{Key: "upload_date", Value: -1}})
+	cursor, err := coll.Find(context.Background(), bson.D{{}}, opt)
 	if err != nil {
 		log.Fatalln(err)
 	}
