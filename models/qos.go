@@ -6,18 +6,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-type QosList struct {
-	ID            primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
-	ISP           string             `json:"isp,omitempty"`
-	Service       string             `json:"service,omitempty"`
-	Bandwidth     float64            `json:"bandwidth,omitempty"`
-	Customer_Name string             `json:"customer_name,omitempty"`
-	City          string             `json:"city,omitempty"`
-	Upload_Date   time.Time          `json:"upload_date,omitempty"`
-	Reports       []Report           `json:"reports,omitempty"`
-}
-
-type QosList2 struct {
+type CustomerISP struct {
 	ID            primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
 	ISP           string             `json:"isp"`
 	Service       string             `json:"service"`
@@ -25,31 +14,34 @@ type QosList2 struct {
 	Customer_Name string             `json:"customer_name"`
 	City          string             `json:"city"`
 	Upload_Date   time.Time          `json:"upload_date"`
-	Dataset_List  []ListDataset      `json:"dataset_list"`
-	//Reports            []Report           `json:"reports,omitempty"`
 }
 
-type ListDataset struct {
+type DatasetQos struct {
+	ID            primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
+	Customer_ID   primitive.ObjectID `json:"customer_id,omitempty" bson:"customer_id,omitempty"`
 	Qos_Parameter string             `json:"qos_parameter"`
-	ID_Dataset    primitive.ObjectID `json:"id_dataset" bson:"id_dataset"` //id from collqdatasetperday
-	Date          time.Time          `json:"date"`
+	Unit          string             `json:"unit"`
 	Num_Data      int                `json:"num_data"` //number of QosData
 	Total_Value   float64            `json:"total_value"`
 	Min_Value     float64            `json:"min_value"`
 	Max_Value     float64            `json:"max_value"`
-}
-
-type QDatasetPerDay struct {
-	ID            primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
-	ID_Qos        primitive.ObjectID `json:"id_qos,omitempty" bson:"id_qos,omitempty"`
-	Qos_Parameter string             `json:"qos_parameter,omitempty"`
-	Date          time.Time          `json:"date,omitempty"`
-	Dataset       []QosData          `json:"dataset,omitempty"`
+	Dataset       []QosData          `json:"dataset"`
 }
 
 type QosData struct {
 	Date_Time time.Time `json:"date_time"`
 	Value     float64   `json:"value"`
+}
+
+type CustomerQosData struct {
+	ID            primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
+	ISP           string             `json:"isp"`
+	Service       string             `json:"service"`
+	Bandwidth     float64            `json:"bandwidth"`
+	Customer_Name string             `json:"customer_name"`
+	City          string             `json:"city"`
+	Upload_Date   time.Time          `json:"upload_date"`
+	Qos_Dataset   []DatasetQos       `json:"qos_dataset"`
 }
 
 type RecapFilteredQos struct {
@@ -76,16 +68,16 @@ type RecapFilteredQosPerCustomer struct {
 }
 
 type RecapQosCustomer struct {
-	ID                         primitive.ObjectID        `json:"_id,omitempty" bson:"_id,omitempty"`
-	ISP                        string                    `json:"isp,omitempty"`
-	Service                    string                    `json:"service,omitempty"`
-	Bandwidth                  float64                   `json:"bandwidth,omitempty"`
-	Customer_Name              string                    `json:"customer_name,omitempty"`
-	City                       string                    `json:"city,omitempty"`
-	Upload_Date                time.Time                 `json:"upload_date,omitempty"`
+	ID                         primitive.ObjectID        `json:"_id" bson:"_id"`
+	ISP                        string                    `json:"isp"`
+	Service                    string                    `json:"service"`
+	Bandwidth                  float64                   `json:"bandwidth"`
+	Customer_Name              string                    `json:"customer_name"`
+	City                       string                    `json:"city"`
+	Upload_Date                time.Time                 `json:"upload_date"`
 	Average_Index_Rating       float32                   `json:"average_index_rating"`
 	Category                   string                    `json:"category"`
-	Recap_QCustomer_Per_QParam []RecapQCustomerPerQParam `json:"recap_qcustomer_per_qparam,omitempty"`
+	Recap_QCustomer_Per_QParam []RecapQCustomerPerQParam `json:"recap_qcustomer_per_qparam"`
 }
 
 type RecapQCustomerPerQParam struct {
@@ -99,36 +91,3 @@ type RecapQCustomerPerQParam struct {
 	Category      string    `json:"category,omitempty"`
 	Dataset       []QosData `json:"dataset,omitempty"`
 }
-
-type Report struct {
-	Qos_Parameter string  `json:"qos_parameter,omitempty"`
-	Average       float64 `json:"average,omitempty"`
-	Max           float64 `json:"max,omitempty"`
-	Min           float64 `json:"min,omitempty"`
-	Index_Rating  int     `json:"index_rating,omitempty"`
-	Category      string  `json:"category,omitempty"`
-}
-
-type QosRecord struct {
-	Qos_Info QosList          `json:"qos_info"`
-	Qos_Data []QDatasetPerDay `json:"qos_data"`
-}
-
-type Identity struct {
-	//ID            primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
-	//Session_Token string             `json:"session_token"`
-	Role     string `json:"role"`
-	Isp_Name string `json:"isp_name,omitempty"`
-}
-
-// type Isp struct {
-// 	ID       primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
-// 	Isp_Name string             `json:"isp_name"`
-// 	Services []Service          `json:"services"`
-// 	Cities   []string           `json:"cities"`
-// }
-
-// type Service struct {
-// 	Service_Name string `json:"service_name"`
-// 	Bandwidth    int    `json:"bandwidth"`
-// }

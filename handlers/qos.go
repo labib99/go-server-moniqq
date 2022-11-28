@@ -13,9 +13,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-func UploadFile2(w http.ResponseWriter, r *http.Request) {
+// Function of the endpoint for uploading QoS data
+func UploadFile(w http.ResponseWriter, r *http.Request) {
 	var csvFiles [4]multipart.File
-	var collQDataset []models.QDatasetPerDay
+	var qosDataset []models.DatasetQos
 	var bandwidth float64
 
 	w.Header().Set("Content-Type", "multipart/form-data")
@@ -24,27 +25,22 @@ func UploadFile2(w http.ResponseWriter, r *http.Request) {
 	r.ParseMultipartForm(10 << 20)
 
 	// Forms for QoS detail information
-	idQos := primitive.NewObjectID()
+	customerID := primitive.NewObjectID()
 	isp := strings.ToLower(r.FormValue("isp"))
 	service := r.FormValue("service")
 	name := r.FormValue("name")
 	city := r.FormValue("city")
 
-	// Sementara untuk bandwidth masih menyesuaikan nama service
-	// Untuk nama service atau produk masih hardcoded
-	//sb := r.FormValue("bandwidth")
-	// bandwidth, err := strconv.ParseFloat(sb, 64)
-	// if err != nil {
-	// 	log.Println(err)
-	// 	http.Error(w, "ERROR", http.StatusInternalServerError)
-	// }
-
+	// In this capstone poject, the bandwidth is still in accordance with the name of the service
+	// The name of the service is still hardcoded
 	if service == "Internet 10Mbps" {
 		bandwidth = 10
 	} else if service == "Internet 20Mbps" {
 		bandwidth = 20
 	} else if service == "Internet 30Mbps" {
 		bandwidth = 30
+	} else if service == "Internet 40Mbps" {
+		bandwidth = 40
 	} else if service == "Internet 50Mbps" {
 		bandwidth = 50
 	} else if service == "Internet 100Mbps" {
@@ -57,9 +53,9 @@ func UploadFile2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Put the value to qosList
-	qosList := models.QosList2{
-		ID:            idQos,
+	// Put the value to customerISP
+	customerISP := models.CustomerISP{
+		ID:            customerID,
 		ISP:           isp,
 		Service:       service,
 		Bandwidth:     bandwidth,
@@ -69,11 +65,11 @@ func UploadFile2(w http.ResponseWriter, r *http.Request) {
 
 	// Processing the file input
 	// forloop is used because there is 4 files that will submitted
-	for i, param := range parameters {
+	for i, qosParam := range qosParameters {
 		var err error
 		var h *multipart.FileHeader
 
-		csvFiles[i], h, err = r.FormFile(param)
+		csvFiles[i], h, err = r.FormFile(qosParam)
 		// Check if the file is csv or not
 		if h.Header.Get("Content-Type") != "text/csv" {
 			http.Error(w, "Tipe file tidak sesuai", http.StatusBadRequest)
@@ -85,36 +81,34 @@ func UploadFile2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Put the information and values from csv file to collQDatasetPerDay
-		collQDatasetPerDay, datasetList, err := loadQdata(idQos, param, csvFiles[i])
+		// Put the information and values from csv file to qosDatasetOneParam
+		qosDatasetOneParam, err := loadQosDatasetFromCSV(customerID, qosParam, csvFiles[i])
 		if err != nil {
 			http.Error(w, "Failed to parse string value to date-time or float64", http.StatusBadRequest)
 			return
 		}
 
-		qosList.Dataset_List = append(qosList.Dataset_List, datasetList...)
-		collQDataset = append(collQDataset, collQDatasetPerDay...)
+		qosDataset = append(qosDataset, qosDatasetOneParam)
 	}
 
-	qosList.Upload_Date = time.Now()
+	customerISP.Upload_Date = time.Now()
 
-	// Insert qosList and docsDataset to Mongodb
-	insertQosToDB(qosList, collQDataset)
+	// Insert data qos from one customer to Mongodb
+	err := insertDataQosToMongoDB(customerISP, qosDataset)
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "ERROR", http.StatusInternalServerError)
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("SUCCESS UPLOADING QOS DATA"))
 }
 
-func GetAllQosList(w http.ResponseWriter, r *http.Request) {
-	var qosList []models.QosList
-
-	payload := getAllDocs(collQosList, qosList)
-
-	// respond on client/browser
-	json.NewEncoder(w).Encode(payload)
-}
-
-func GetRecapFilteredQos(w http.ResponseWriter, r *http.Request) {
-	//var empty models.RecapFilteredQos
+// Function of the endpoint for obtaining QoS parameter analysis results from
+// an ISP product in a certain city on a certain date
+func GetRecapQosOneParamFilteredByDate(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	payload, err := recapFilteredQos(
+	payload, err := recapQosOneParamFilteredByDate(
 		vars["qos_param"], vars["isp"], vars["city"],
 		vars["service"], vars["from_date"], vars["to_date"],
 	)
@@ -131,6 +125,16 @@ func GetRecapFilteredQos(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Function of the endpoint for getting all list of customers ISP
+func GetAllQosList(w http.ResponseWriter, r *http.Request) {
+	var qosList []models.CustomerISP
+
+	payload := getAllDocs(collCustomerISP, qosList)
+
+	json.NewEncoder(w).Encode(payload)
+}
+
+// Function of the endpoint for getting the QoS analysis results of one customer
 func GetRecapQosCustomer(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	payload, err := recapQosCustomer(vars["id"])
@@ -141,28 +145,10 @@ func GetRecapQosCustomer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(payload)
 }
 
-func GetOneQosRecord(w http.ResponseWriter, r *http.Request) {
-	//w.Header().Set("Context-Type", "application/x-www-form-urlencoded")
-	parameter := mux.Vars(r)
-	result := getOneQosRecord(parameter["id"])
-	json.NewEncoder(w).Encode(result)
-}
-
+// Function of the endpoint for deleting QoS data from a single customer
 func DeleteOneQosRecord(w http.ResponseWriter, r *http.Request) {
-	// w.Header().Set("Context-Type", "application/x-www-form-urlencoded")
-	// w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	parameter := mux.Vars(r)
 	deleteOneQosRecord(parameter["id"])
-	//w.WriteHeader(http.StatusOK)
-	//w.Write([]byte("DELETE ONE QOS LIST SUCCESS"))
+
 	json.NewEncoder(w).Encode("SUCCESS: DELETED QOS RECORD WITH LIST ID " + parameter["id"])
 }
-
-// func GetAllIsp(w http.ResponseWriter, r *http.Request) {
-// 	// get all isp
-// 	var ispList []models.Isp
-
-// 	result := getAllDocs(collIsp, ispList)
-
-// 	json.NewEncoder(w).Encode(result)
-// }

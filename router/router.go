@@ -12,15 +12,12 @@ func Router() *mux.Router {
 
 	adminAPI := router.PathPrefix("/admin").Subrouter()
 	adminAPI.HandleFunc("/qos", handlers.GetAllQosList).Methods(http.MethodGet)
-	//adminAPI.HandleFunc("/qos/upload", handlers.UploadFile).Methods(http.MethodPost)
-	adminAPI.HandleFunc("/qos/upload", handlers.UploadFile2).Methods(http.MethodPost)
+	adminAPI.HandleFunc("/qos/upload", handlers.UploadFile).Methods(http.MethodPost)
 	adminAPI.HandleFunc("/qos/delete/{id}", handlers.DeleteOneQosRecord).Methods("DELETE", "OPTIONS")
 	adminAPI.HandleFunc("/qos/{id}", handlers.GetRecapQosCustomer).Methods(http.MethodGet)
 
 	qosAPI := router.PathPrefix("/qos").Subrouter()
-	//qosAPI.HandleFunc("/{qos_param}/{isp}/{city}/{service}/{bandwidth}", handlers.GetQosRecapBasedOnQParam).Methods(http.MethodGet)
-	qosAPI.HandleFunc("/{qos_param}/{isp}/{city}/{service}/{from_date}/{to_date}", handlers.GetRecapFilteredQos).Methods(http.MethodGet)
-	qosAPI.HandleFunc("/{id}", handlers.GetOneQosRecord).Methods(http.MethodGet)
+	qosAPI.HandleFunc("/{qos_param}/{isp}/{city}/{service}/{from_date}/{to_date}", handlers.GetRecapQosOneParamFilteredByDate).Methods(http.MethodGet)
 
 	authAPI := router.PathPrefix("").Subrouter()
 	authAPI.HandleFunc("/whoami", handlers.WhoAmI).Methods(http.MethodGet)

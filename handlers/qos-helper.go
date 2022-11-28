@@ -4,128 +4,303 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
-	"fmt"
 	"io"
 	"log"
-	"math"
 	"moniqq/models"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/montanaflynn/stats"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-func loadQdata(id_qos primitive.ObjectID, param string, r io.Reader) ([]models.QDatasetPerDay, []models.ListDataset, error) {
-	var num int
+// Load data from CSV file
+func loadQosDatasetFromCSV(customerID primitive.ObjectID, qosParam string, r io.Reader) (models.DatasetQos, error) {
 	var total, min, max float64
-	var collQDatasetPerDay []models.QDatasetPerDay
+	var qosDataset models.DatasetQos
 	var dataset []models.QosData
-	var qDatasetPerDay models.QDatasetPerDay
-	var datasetList []models.ListDataset
+	var unit string
 
-	// Read file csv
+	if qosParam == "throughput" {
+		unit = "Mbps"
+	} else if qosParam == "packet loss" {
+		unit = "%"
+	} else if qosParam == "jitter" || qosParam == "delay" {
+		unit = "ms"
+	}
+
+	// Read csv
 	reader := csv.NewReader(r)
 	records, err := reader.ReadAll()
 	if err != nil {
-		log.Fatalln(err)
+		return qosDataset, err
 	}
 
 	if len(records) <= 1 {
-		return collQDatasetPerDay, datasetList, errors.New("data <1")
+		return qosDataset, errors.New("data <1")
 	}
 
-	for row, values := range records {
-		if row > 0 { // Omit header line
-			var qData models.QosData
-			var listDataset models.ListDataset
-			for column, value := range values {
+	for row, columns := range records {
+		if row > 0 {
+			var qosData models.QosData
+			for column, value := range columns {
 				if column == 0 { // DateTime
 					var dt time.Time
-					for k, layout := range dtLayout {
+					for i, layout := range dtLayout {
 						dt, err = time.ParseInLocation(layout, value, timeLoc)
 						if err != nil {
-							k++
-							if len(dtLayout) == k {
+							i++
+							if len(dtLayout) == i {
 								log.Println(err)
-								return collQDatasetPerDay, datasetList, err
+								return qosDataset, err
 							}
 						} else {
 							break
 						}
 					}
-					qData.Date_Time = dt
-				} else if column == 1 { // Value
-					qData.Value, err = strconv.ParseFloat(value, 64)
+					qosData.Date_Time = dt
+				} else if column == 1 { // value of qos parameter
+					qosData.Value, err = strconv.ParseFloat(value, 64)
 					if err != nil {
 						log.Println(err)
-						return collQDatasetPerDay, datasetList, err
+						return qosDataset, err
 					}
-					total += qData.Value
+					total += qosData.Value
 				}
 			}
 			if row == 1 {
-				max = qData.Value
-				min = qData.Value
+				max = qosData.Value
+				min = qosData.Value
 			}
 
-			if max < qData.Value {
-				max = qData.Value
+			if max < qosData.Value {
+				max = qosData.Value
 			}
-			if min > qData.Value {
-				min = qData.Value
+			if min > qosData.Value {
+				min = qosData.Value
 			}
-			year, month, day := qData.Date_Time.Date()
-			date := time.Date(year, month, day, 0, 0, 0, 0, timeLoc)
-
-			// When qosDataset was first created,
-			// the value of qosDataset.Date equals to 0001-01-01 00:00:00 +0000 UTC
-			if qDatasetPerDay.Date.Year() == 1 {
-				qDatasetPerDay.Date = date
-			}
-			if qDatasetPerDay.Date == date {
-				dataset = append(dataset, qData)
-				num++
-			}
-			if qDatasetPerDay.Date != date || row == len(records)-1 {
-				qDatasetPerDay = models.QDatasetPerDay{
-					ID:            primitive.NewObjectID(),
-					ID_Qos:        id_qos,
-					Qos_Parameter: param,
-					Date:          qDatasetPerDay.Date,
-					Dataset:       dataset,
-				}
-				collQDatasetPerDay = append(collQDatasetPerDay, qDatasetPerDay)
-				listDataset = models.ListDataset{
-					Qos_Parameter: qDatasetPerDay.Qos_Parameter,
-					ID_Dataset:    qDatasetPerDay.ID,
-					Date:          qDatasetPerDay.Date,
-					Num_Data:      num,
-					Total_Value:   total,
-					Min_Value:     min,
-					Max_Value:     max,
-				}
-				datasetList = append(datasetList, listDataset)
-				dataset = nil
-				qDatasetPerDay.Date = date
-				dataset = append(dataset, qData)
-				num = 1
-				total = 0
-				min = qData.Value
-				max = qData.Value
-			}
+			dataset = append(dataset, qosData)
 		}
 	}
-	return collQDatasetPerDay, datasetList, nil
+
+	qosDataset = models.DatasetQos{
+		Customer_ID:   customerID,
+		Qos_Parameter: qosParam,
+		Unit:          unit,
+		Num_Data:      len(dataset),
+		Total_Value:   total,
+		Max_Value:     max,
+		Min_Value:     min,
+		Dataset:       dataset,
+	}
+
+	return qosDataset, nil
+}
+
+// Insert data QoS to MongoDB
+func insertDataQosToMongoDB(customerISP models.CustomerISP, qosDataset []models.DatasetQos) error {
+	var docs []interface{}
+
+	task1, err := collCustomerISP.InsertOne(context.Background(), customerISP)
+	if err != nil {
+		log.Println("ERROR: Can't insert documents to MongoDB")
+		return err
+	}
+	log.Println("Success inserting a document with ID", task1.InsertedID, "to coll. customerISP ")
+
+	for _, d := range qosDataset {
+		docs = append(docs, d)
+	}
+
+	task2, err := collDatasetQos.InsertMany(context.Background(), docs)
+	if err != nil {
+		log.Println("ERROR: Can't insert documents to MongoDB")
+		filter := bson.M{"_id": customerISP.ID}
+		task3, _ := collCustomerISP.DeleteOne(context.TODO(), filter)
+		log.Println("Deleted ", task3.DeletedCount, " document from coll. customerISP")
+		return err
+	}
+	log.Println("Success inserting ", len(task2.InsertedIDs), " document(s) to coll. datasetQos")
+
+	return nil
+}
+
+// Get qos recap based on isp name, qos_parameter, city, date
+func recapQosOneParamFilteredByDate(qosParam, isp, city, service, fromDateString, toDateString string) (models.RecapFilteredQos, error) {
+	var bandwidth, totalAvg, overallMax, overallMin float64
+	var filteredQos models.RecapFilteredQosPerCustomer
+	var collFilteredQos []models.RecapFilteredQosPerCustomer
+	var customersQosData []models.CustomerQosData
+	var recap models.RecapFilteredQos
+
+	startDate, err := time.ParseInLocation(dtLayout[len(dtLayout)-1], fromDateString, timeLoc)
+	if err != nil {
+		return recap, err
+	}
+	toDate, err := time.ParseInLocation(dtLayout[len(dtLayout)-1], toDateString, timeLoc)
+	if err != nil {
+		return recap, err
+	}
+	endDate := toDate.AddDate(0, 0, 1)
+
+	matchStage := bson.D{{
+		Key: "$match", Value: bson.D{
+			{Key: "isp", Value: isp},
+			{Key: "city", Value: city},
+			{Key: "service", Value: service},
+		},
+	}}
+
+	lookUpStage := bson.D{{
+		Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: "datasetQos"},
+			{Key: "let", Value: bson.D{{Key: "idqos", Value: "$_id"}}},
+			{Key: "pipeline", Value: bson.A{
+				bson.D{
+					{Key: "$match", Value: bson.D{
+						{Key: "$expr", Value: bson.D{
+							{Key: "$eq", Value: bson.A{"$customer_id", "$$idqos"}},
+						}},
+						{Key: "qos_parameter", Value: qosParam},
+						{Key: "dataset", Value: bson.D{
+							{Key: "$elemMatch", Value: bson.D{
+								{Key: "date_time", Value: bson.D{
+									{Key: "$gte", Value: startDate},
+									{Key: "$lt", Value: endDate},
+								}},
+							}},
+						}},
+					}},
+				},
+				bson.D{
+					{Key: "$project", Value: bson.D{
+						{Key: "qos_parameter", Value: 1},
+						{Key: "unit", Value: 1},
+						{Key: "customer_id", Value: 1},
+						{Key: "dataset", Value: bson.D{
+							{Key: "$filter", Value: bson.D{
+								{Key: "input", Value: "$dataset"},
+								{Key: "as", Value: "d"},
+								{Key: "cond", Value: bson.D{
+									{Key: "$and", Value: bson.A{
+										bson.D{{Key: "$gte", Value: bson.A{"$$d.date_time", startDate}}},
+										bson.D{{Key: "$lt", Value: bson.A{"$$d.date_time", endDate}}},
+									}},
+								}},
+							}},
+						}},
+					}},
+				},
+			}},
+			{Key: "as", Value: "qos_dataset"},
+		},
+	}}
+
+	sortStage := bson.D{
+		{Key: "$sort", Value: bson.D{
+			{Key: "upload_date", Value: 1},
+		}},
+	}
+
+	cursor, err := collCustomerISP.Aggregate(
+		context.Background(), mongo.Pipeline{matchStage, lookUpStage, sortStage},
+	)
+	if err != nil {
+		log.Println(err)
+		return recap, err
+	}
+
+	if err = cursor.All(context.Background(), &customersQosData); err != nil {
+		log.Println(err)
+		return recap, err
+	}
+
+	for i, customerQosData := range customersQosData {
+		var values []float64
+		var mean, max, min, stdDeviation float64
+
+		for _, qosData := range customerQosData.Qos_Dataset[0].Dataset {
+			values = append(values, qosData.Value)
+		}
+
+		mean, err = stats.Mean(values)
+		if err != nil {
+			log.Println(err)
+			return recap, err
+		}
+		max, err = stats.Max(values)
+		if err != nil {
+			log.Println(err)
+			return recap, err
+		}
+		min, err = stats.Min(values)
+		if err != nil {
+			log.Println(err)
+			return recap, err
+		}
+		stdDeviation, err = stats.StandardDeviationSample(values)
+		if err != nil {
+			log.Println(err)
+			return recap, err
+		}
+
+		bandwidth = customerQosData.Bandwidth
+		index, category := rating(qosParam, mean, bandwidth)
+
+		filteredQos = models.RecapFilteredQosPerCustomer{
+			ID_Qos:        customerQosData.ID,
+			Customer_Name: customerQosData.Customer_Name,
+			Average_Value: mean,
+			Std_Deviation: stdDeviation,
+			Min_Value:     min,
+			Max_Value:     max,
+			Index_Rating:  index,
+			Category:      category,
+		}
+
+		totalAvg += mean
+		if i == 0 {
+			overallMax = max
+			overallMin = min
+		}
+		if overallMax < max {
+			overallMax = max
+		}
+		if overallMin > min {
+			overallMin = min
+		}
+		collFilteredQos = append(collFilteredQos, filteredQos)
+	}
+
+	overallAverage := totalAvg / float64(len(customersQosData))
+	roundedOverallAverage, err := stats.Round(overallAverage, 3)
+	if err != nil {
+		log.Println(err)
+		return recap, err
+	}
+	index, category := rating(qosParam, overallAverage, bandwidth)
+
+	recap = models.RecapFilteredQos{
+		Qos_Parameter:        qosParam,
+		Unit:                 customersQosData[0].Qos_Dataset[0].Unit,
+		Overall_Average:      roundedOverallAverage,
+		Overall_Max_Value:    overallMax,
+		Overall_Min_Value:    overallMin,
+		Index_Rating:         index,
+		Category:             category,
+		Recap_F_Per_Customer: collFilteredQos,
+	}
+
+	return recap, nil
 }
 
 // Rate the qos parameter using TIPHON standard
 func rating(param string, value, bandwidth float64) (index float32, category string) {
-	if param == parameters[0] {
-		// percent = (Throughput/bandwidth) x 100
-		// bandwidth and throughput in Mbps
+	if param == qosParameters[0] {
+		// Percent = (Throughput/bandwidth) x 100
+		// Bandwidth and throughput in Mbps
 		percent := (value / bandwidth) * 100
 		if percent > 75 {
 			index = 4
@@ -140,21 +315,21 @@ func rating(param string, value, bandwidth float64) (index float32, category str
 			index = 1
 			category = "Buruk"
 		}
-	} else if param == parameters[1] {
+	} else if param == qosParameters[1] {
 		if value < 3 {
 			index = 4
 			category = "Sangat Bagus"
 		} else if value >= 3 && value < 15 {
 			index = 3
 			category = "Bagus"
-		} else if value >= 15 && value <= 25 {
+		} else if value >= 15 && value < 25 {
 			index = 2
 			category = "Sedang"
-		} else if value > 25 {
+		} else if value >= 25 {
 			index = 1
 			category = "Buruk"
 		}
-	} else if param == parameters[2] {
+	} else if param == qosParameters[2] {
 		if value < 150 {
 			index = 4
 			category = "Sangat Bagus"
@@ -168,7 +343,7 @@ func rating(param string, value, bandwidth float64) (index float32, category str
 			index = 1
 			category = "Buruk"
 		}
-	} else if param == parameters[3] {
+	} else if param == qosParameters[3] {
 		if value == 0 {
 			index = 4
 			category = "Sangat Bagus"
@@ -200,30 +375,6 @@ func rating(param string, value, bandwidth float64) (index float32, category str
 	return index, category
 }
 
-// Insert one QosList and n QosDataset in the DB
-func insertQosToDB(ql models.QosList2, qd []models.QDatasetPerDay) {
-	result, err := collQosList.InsertOne(context.Background(), ql)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println("Inserted a Single QosList ", result.InsertedID)
-
-	var docs []interface{}
-	for _, d := range qd {
-		docs = append(docs, d)
-	}
-
-	result2, err2 := collQosDataset.InsertMany(context.TODO(), docs)
-	if err2 != nil {
-		log.Fatal(err)
-	}
-
-	for i := 0; i < len(qd); i++ {
-		log.Println("Inserted QosDataset ", result2.InsertedIDs[i])
-	}
-
-}
-
 // Get All docs from a collection in Mongodb
 func getAllDocs(coll *mongo.Collection, results any) any {
 	cursor, err := coll.Find(context.Background(), bson.D{{}})
@@ -238,325 +389,85 @@ func getAllDocs(coll *mongo.Collection, results any) any {
 	return results
 }
 
-// Get qos recap based on qos_parameter and date
-// If you want get  qos recap based on just qos_parameter,
-// then the value of fromDateString and toDateString must be "no_date"
-func recapFilteredQos(qosParam, isp, city, service, fromDateString, toDateString string) (models.RecapFilteredQos, error) {
-	var bandwidth, totalAvg, overallMax, overallMin float64
-	var unit string
-	// var totalIndex float32
-	var filteredQos models.RecapFilteredQosPerCustomer
-	var collFilteredQos []models.RecapFilteredQosPerCustomer
-	var qosList []models.QosList2
-	var result models.RecapFilteredQos
-	var match, cond primitive.A
-
-	if qosParam == "throughput" {
-		unit = "Mbps"
-	} else if qosParam == "packet loss" {
-		unit = "%"
-	} else if qosParam == "jitter" || qosParam == "delay" {
-		unit = "ms"
-	}
-
-	qosParam = strings.ToLower(qosParam)
-	isp = strings.ToLower(isp)
-
-	if service == "Internet 10Mbps" {
-		bandwidth = 10
-	} else if service == "Internet 20Mbps" {
-		bandwidth = 20
-	} else if service == "Internet 30Mbps" {
-		bandwidth = 30
-	} else if service == "Internet 50Mbps" {
-		bandwidth = 50
-	} else if service == "Internet 100Mbps" {
-		bandwidth = 100
-	}
-
-	// Check if the value of fromDateString & toDateString equals to "no_date" or not
-	if fromDateString == "no_date" && toDateString == "no_date" {
-		match = bson.A{bson.D{{Key: "qos_parameter", Value: qosParam}}}
-		cond = bson.A{bson.D{{Key: "$eq", Value: bson.A{"$$dataset_list.qos_parameter", qosParam}}}}
-	} else {
-		fromDate, err := time.ParseInLocation(dtLayout[len(dtLayout)-1], fromDateString, timeLoc)
-		if err != nil {
-			return result, err
-		}
-		toDate, err := time.ParseInLocation(dtLayout[len(dtLayout)-1], toDateString, timeLoc)
-		if err != nil {
-			return result, err
-		}
-
-		match = bson.A{bson.D{
-			{Key: "qos_parameter", Value: qosParam},
-			{Key: "date", Value: bson.D{
-				{Key: "$gte", Value: fromDate}, {Key: "$lte", Value: toDate},
-			}}}}
-		cond = bson.A{
-			bson.D{{Key: "$eq", Value: bson.A{"$$dataset_list.qos_parameter", qosParam}}},
-			bson.D{{Key: "$gte", Value: bson.A{"$$dataset_list.date", fromDate}}},
-			bson.D{{Key: "$lte", Value: bson.A{"$$dataset_list.date", toDate}}},
-		}
-	}
-
-	matchStage := bson.D{{Key: "$match", Value: bson.D{
-		{Key: "isp", Value: isp},
-		{Key: "city", Value: city},
-		{Key: "service", Value: service},
-		{Key: "bandwidth", Value: bandwidth},
-		{Key: "dataset_list", Value: bson.D{
-			{Key: "$elemMatch", Value: bson.D{
-				{Key: "$and", Value: match},
-			}}}}}}}
-	projectStage := bson.D{{Key: "$project", Value: bson.D{
-		//{Key: "isp", Value: 1},{Key: "service", Value: 1},
-		//{Key: "bandwidth", Value: 1},{Key: "city", Value: 1},
-		{Key: "_id", Value: 1},
-		{Key: "customer_name", Value: 1},
-		{Key: "upload_date", Value: 1},
-		{Key: "dataset_list", Value: bson.D{
-			{Key: "$filter", Value: bson.D{
-				{Key: "input", Value: "$dataset_list"},
-				{Key: "as", Value: "dataset_list"},
-				{Key: "cond", Value: bson.D{
-					{Key: "$and", Value: cond},
-				}}}}}}}}}
-	sortStage := bson.D{
-		{Key: "$sort", Value: bson.D{
-			{Key: "upload_date", Value: 1},
-		}}}
-	cursor, err := collQosList.Aggregate(
-		context.Background(), mongo.Pipeline{matchStage, projectStage, sortStage},
-	)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	if err = cursor.All(context.Background(), &qosList); err != nil {
-		log.Fatalln(err)
-	}
-
-	for _, list := range qosList {
-		var avg, total, max, min float64
-		var num int
-		for j, listDataset := range list.Dataset_List {
-			total += listDataset.Total_Value
-			num += listDataset.Num_Data
-			if j == 0 {
-				max = listDataset.Max_Value
-				min = listDataset.Min_Value
-				overallMax = max
-				overallMin = min
-			}
-			if max < listDataset.Max_Value {
-				max = listDataset.Max_Value
-			}
-			if min > listDataset.Min_Value {
-				min = listDataset.Min_Value
-			}
-		}
-		avg = total / float64(num)
-		index, category := rating(qosParam, avg, bandwidth)
-		filteredQos = models.RecapFilteredQosPerCustomer{
-			ID_Qos:        list.ID,
-			Customer_Name: list.Customer_Name,
-			Average_Value: avg,
-			Max_Value:     max,
-			Min_Value:     min,
-			Index_Rating:  index,
-			Category:      category,
-		}
-		collFilteredQos = append(collFilteredQos, filteredQos)
-		totalAvg += avg
-		// totalIndex += index
-		if overallMax < max {
-			overallMax = max
-		}
-		if overallMin > min {
-			overallMin = min
-		}
-	}
-
-	overallAverage := totalAvg / float64(len(qosList))
-	roundedOverallAverage := roundFloat(overallAverage, 3)
-	// averageIndex := totalIndex / float32(len(qosList))
-	// averageIndex = float32(roundFloat(float64(averageIndex), 2))
-
-	index, category := rating(qosParam, overallAverage, bandwidth)
-	result = models.RecapFilteredQos{
-		Qos_Parameter:        qosParam,
-		Unit:                 unit,
-		Overall_Average:      roundedOverallAverage,
-		Overall_Max_Value:    overallMax,
-		Overall_Min_Value:    overallMin,
-		Index_Rating:         index,
-		Category:             category,
-		Recap_F_Per_Customer: collFilteredQos,
-	}
-	return result, nil
-}
-
-// Get qos recap for one Customer
+// Get qos recap for one customer
 func recapQosCustomer(id string) (models.RecapQosCustomer, error) {
-	var result models.RecapQosCustomer
-	var qosList models.QosList2
-	var collQDataset []models.QDatasetPerDay
+	var recapQCustomer models.RecapQosCustomer
+	var collQDataset []models.DatasetQos
 	var totalIndex float32
 
 	idQos, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		return result, err
+		return recapQCustomer, err
 	}
 
 	filter := bson.M{"_id": idQos}
-	err = collQosList.FindOne(context.Background(), filter).Decode(&qosList)
+	err = collCustomerISP.FindOne(context.Background(), filter).Decode(&recapQCustomer)
 	if err != nil {
-		return result, err
+		return recapQCustomer, err
 	}
 
-	filterDataset := bson.D{{Key: "id_qos", Value: idQos}}
-	cursor, err := collQosDataset.Find(context.Background(), filterDataset)
+	filterDataset := bson.D{{Key: "customer_id", Value: idQos}}
+	cursor, err := collDatasetQos.Find(context.Background(), filterDataset)
 	if err != nil {
-		return result, err
+		return recapQCustomer, err
 	}
 
 	if err = cursor.All(context.Background(), &collQDataset); err != nil {
-		return result, err
+		return recapQCustomer, err
 	}
 
-	for _, param := range parameters {
+	for _, dataset := range collQDataset {
 		var recap models.RecapQCustomerPerQParam
-		var avg, total, max, min float64
-		var num int
-		var unit string
+		var values []float64
 
-		recap.Qos_Parameter = param
+		recap.Qos_Parameter = dataset.Qos_Parameter
+		recap.Unit = dataset.Unit
 
-		if param == "throughput" {
-			unit = "Mbps"
-		} else if param == "packet loss" {
-			unit = "%"
-		} else if param == "jitter" || param == "delay" {
-			unit = "ms"
+		avg := dataset.Total_Value / float64(dataset.Num_Data)
+		recap.Average_Value, err = stats.Round(avg, 3)
+		if err != nil {
+			return recapQCustomer, err
 		}
 
-		recap.Unit = unit
+		recap.Index_Rating, recap.Category = rating(
+			recap.Qos_Parameter, recap.Average_Value, recapQCustomer.Bandwidth)
+		recap.Max_Value = dataset.Max_Value
+		recap.Min_Value = dataset.Min_Value
+		recap.Dataset = dataset.Dataset
 
-		for _, dataset := range collQDataset {
-			if recap.Qos_Parameter == dataset.Qos_Parameter {
-				recap.Dataset = append(recap.Dataset, dataset.Dataset...)
-			}
+		for _, data := range dataset.Dataset {
+			values = append(values, data.Value)
 		}
-		for _, listDataset := range qosList.Dataset_List {
-			if listDataset.Qos_Parameter == param {
-				total += listDataset.Total_Value
-				if num == 0 {
-					max = listDataset.Max_Value
-					min = listDataset.Min_Value
-				}
-				if max < listDataset.Max_Value {
-					max = listDataset.Max_Value
-				}
-				if min > listDataset.Min_Value {
-					min = listDataset.Min_Value
-				}
-				num += listDataset.Num_Data
-			}
+		recap.Std_Deviation, err = stats.StandardDeviation(values)
+		if err != nil {
+			return recapQCustomer, err
 		}
-		avg = total / float64(num)
-		index, category := rating(param, avg, qosList.Bandwidth)
 
-		recap.Average_Value = avg
-		recap.Category = category
-		recap.Index_Rating = index
-		recap.Max_Value = max
-		recap.Min_Value = min
-
-		result.Recap_QCustomer_Per_QParam = append(result.Recap_QCustomer_Per_QParam, recap)
-		totalIndex += index
+		recapQCustomer.Recap_QCustomer_Per_QParam = append(recapQCustomer.Recap_QCustomer_Per_QParam, recap)
+		totalIndex += recap.Index_Rating
 	}
-	averageIndex := totalIndex / float32(len(result.Recap_QCustomer_Per_QParam))
-	index, category := rating("qos", float64(averageIndex), 0)
+	averageIndex := totalIndex / float32(len(recapQCustomer.Recap_QCustomer_Per_QParam))
+	recapQCustomer.Average_Index_Rating, recapQCustomer.Category = rating(
+		"qos", float64(averageIndex), 0)
 
-	result.Category = category
-	result.Average_Index_Rating = index
-	result.Bandwidth = qosList.Bandwidth
-	result.Customer_Name = qosList.Customer_Name
-	result.City = qosList.City
-	result.Service = qosList.Service
-	result.ISP = qosList.ISP
-	result.ID = qosList.ID
-	result.Upload_Date = qosList.Upload_Date
-
-	return result, nil
+	return recapQCustomer, nil
 }
 
-// perlu diperbaiki
-func getOneQosRecord(id string) models.QosRecord {
-	var qosRecord models.QosRecord
-	var qosInfo models.QosList
-	var qosDatasets []models.QDatasetPerDay
-
-	idQos, _ := primitive.ObjectIDFromHex(id)
-	filterList := bson.M{"_id": idQos}
-	cursor := collQosList.FindOne(context.Background(), filterList)
-	if err := cursor.Err(); err != nil {
-		panic(err)
-	}
-
-	if err := cursor.Decode(&qosInfo); err != nil {
-		panic(err)
-	}
-	qosRecord.Qos_Info = qosInfo
-
-	filterDataset := bson.M{"id_qos": idQos}
-	cursor1, err1 := collQosDataset.Find(context.Background(), filterDataset)
-	if err1 != nil {
-		panic(err1)
-	}
-
-	if err1 = cursor1.All(context.Background(), &qosDatasets); err1 != nil {
-		panic(err1)
-	}
-	qosRecord.Qos_Data = qosDatasets
-
-	fmt.Printf("Get QosRecord from idqos: %s \n", id)
-
-	return qosRecord
-}
-
-// bisa diedit
+// Delete QoS data from one customer
 func deleteOneQosRecord(id string) {
 	idQos, _ := primitive.ObjectIDFromHex(id)
 	filterList := bson.M{"_id": idQos}
-	d, err := collQosList.DeleteOne(context.TODO(), filterList)
+	d, err := collCustomerISP.DeleteOne(context.TODO(), filterList)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	filterDataset := bson.M{"id_qos": idQos}
-	d1, err1 := collQosDataset.DeleteMany(context.TODO(), filterDataset)
+	filterDataset := bson.M{"customer_id": idQos}
+	d1, err1 := collDatasetQos.DeleteMany(context.TODO(), filterDataset)
 	if err1 != nil {
 		log.Fatal(err1)
 	}
 
-	//update isp buat parameter
-
-	log.Printf("Deleted %d QosList and %d QosDataset with idqos:%s\n", d.DeletedCount, d1.DeletedCount, id)
+	log.Printf(
+		"Deleted %d QosList and %d QosDataset with idqos:%s\n", d.DeletedCount, d1.DeletedCount, id)
 }
-
-func roundFloat(val float64, precision uint) float64 {
-	ratio := math.Pow(10, float64(precision))
-	return math.Round(val*ratio) / ratio
-}
-
-// func updateReports(idqos primitive.ObjectID, rep models.Report) {
-// 	filter := bson.M{"_id": idqos}
-// 	update := bson.M{"$push": bson.M{"reports": bson.M{"category": rep.Category, "average": rep.Average, "max": rep.Max, "min": rep.Min}}}
-// 	result, err := collQosList.UpdateOne(context.Background(), filter, update)
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
-// 	fmt.Println("modified count: ", result.ModifiedCount)
-// }

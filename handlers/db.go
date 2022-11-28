@@ -11,10 +11,10 @@ import (
 )
 
 var sdb *mongo.Database
-var collQosList, collQosDataset, collUsers *mongo.Collection
+var collUsers, collDatasetQos, collCustomerISP *mongo.Collection
 
+// Load .env file
 func loadEnv() {
-	// load .env file
 	err := godotenv.Load(".env")
 
 	if err != nil {
@@ -38,7 +38,7 @@ func createDBInstance() {
 	// Set client options and context
 	clientOptions := options.Client().ApplyURI(connectionURI)
 
-	// connect to MongoDB
+	// Connect to MongoDB
 	client, err := mongo.Connect(context.TODO(), clientOptions)
 	if err != nil {
 		log.Fatal(err)
@@ -57,7 +57,7 @@ func createDBInstance() {
 	sdb = client.Database(sessionsdb)
 
 	// Collections
-	collQosList = client.Database(db).Collection(dbCollQosList)
-	collQosDataset = client.Database(db).Collection(dbCollQosDataset)
 	collUsers = client.Database(db).Collection(dbCollUsers)
+	collDatasetQos = client.Database(db).Collection(dbCollQosDataset)
+	collCustomerISP = client.Database(db).Collection(dbCollQosList)
 }

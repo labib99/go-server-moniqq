@@ -32,6 +32,7 @@ func sessionAndAuth() {
 	SessionManager.Cookie.Secure = true
 }
 
+// Function for authorization
 func Authorizer(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		role := SessionManager.GetString(r.Context(), "role")
@@ -67,11 +68,10 @@ func Authorizer(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
+// Function of the endpoint for sign in
 func Login(w http.ResponseWriter, r *http.Request) {
 	var foundUser models.User
 	var authData models.Identity
-
-	//SessionManager.RenewToken(r.Context())
 
 	username := r.PostFormValue("username")
 	pass := r.PostFormValue("password")
@@ -95,26 +95,23 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 	SessionManager.Put(r.Context(), "id", foundUser.ID.Hex())
 	SessionManager.Put(r.Context(), "role", foundUser.Role)
-	SessionManager.Put(r.Context(), "isp_name", foundUser.Isp_Name)
 
-	// if foundUser.Role == "isp" {
-	// 	SessionManager.Put(r.Context(), "isp_name", foundUser.Isp_Name)
-	// 	authData.Isp_Name = foundUser.Isp_Name
-	// }
+	if foundUser.Role == "isp" {
+		SessionManager.Put(r.Context(), "isp_name", foundUser.Isp_Name)
+		authData.Isp_Name = foundUser.Isp_Name
+	}
 
 	log.Println(
 		"User with role:", foundUser.Role, "(UserID:"+foundUser.ID.Hex()+")", "is logged in",
 	)
 
-	//authData.ID = foundUser.ID
 	authData.Role = foundUser.Role
-	//authData.Isp_Name = foundUser.Isp_Name
-	//authData.Session_Token = SessionManager.Token(r.Context())
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(authData)
 }
 
+// Function of the endpoint for sign out
 func Logout(w http.ResponseWriter, r *http.Request) {
 	id := SessionManager.GetString(r.Context(), "id")
 	role := SessionManager.GetString(r.Context(), "role")
@@ -130,6 +127,7 @@ func Logout(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("LOGOUT SUCCESS"))
 }
 
+// Function of the endpoint for check the role of user
 func WhoAmI(w http.ResponseWriter, r *http.Request) {
 	var iam models.Identity
 
