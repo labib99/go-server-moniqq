@@ -199,6 +199,21 @@ func recapQosOneParamFilteredByDate(qosParam, isp, city, service, fromDateString
 		},
 	}}
 
+	addFieldsStage := bson.D{{
+		Key: "$addFields", Value: bson.D{{
+			Key: "size_qos_dataset", Value: bson.D{{Key: "$size", Value: "$qos_dataset"}},
+		}},
+	}}
+
+	matchStage2 := bson.D{{
+		Key: "$match", Value: bson.D{
+			{Key: "size_qos_dataset", Value: bson.D{{Key: "$gt", Value: 0}}}},
+	}}
+
+	projectStage := bson.D{{
+		Key: "$project", Value: bson.D{{Key: "size_qos_dataset", Value: 0}},
+	}}
+
 	sortStage := bson.D{
 		{Key: "$sort", Value: bson.D{
 			{Key: "upload_date", Value: 1},
@@ -206,7 +221,8 @@ func recapQosOneParamFilteredByDate(qosParam, isp, city, service, fromDateString
 	}
 
 	cursor, err := collCustomerISP.Aggregate(
-		context.Background(), mongo.Pipeline{matchStage, lookUpStage, sortStage},
+		context.Background(), mongo.Pipeline{
+			matchStage, lookUpStage, addFieldsStage, matchStage2, projectStage, sortStage},
 	)
 	if err != nil {
 		log.Println(err)
@@ -218,80 +234,82 @@ func recapQosOneParamFilteredByDate(qosParam, isp, city, service, fromDateString
 		return recap, err
 	}
 
-	for i, customerQosData := range customersQosData {
-		var values []float64
-		var mean, max, min, stdDeviation float64
+	if len(customersQosData) > 0 {
+		for i, customerQosData := range customersQosData {
+			var values []float64
+			var mean, max, min, stdDeviation float64
 
-		for _, qosData := range customerQosData.Qos_Dataset[0].Dataset {
-			values = append(values, qosData.Value)
+			for _, qosData := range customerQosData.Qos_Dataset[0].Dataset {
+				values = append(values, qosData.Value)
+			}
+
+			mean, err = stats.Mean(values)
+			if err != nil {
+				log.Println(err)
+				return recap, err
+			}
+			max, err = stats.Max(values)
+			if err != nil {
+				log.Println(err)
+				return recap, err
+			}
+			min, err = stats.Min(values)
+			if err != nil {
+				log.Println(err)
+				return recap, err
+			}
+			stdDeviation, err = stats.StandardDeviationSample(values)
+			if err != nil {
+				log.Println(err)
+				return recap, err
+			}
+
+			bandwidth = customerQosData.Bandwidth
+			index, category := rating(qosParam, mean, bandwidth)
+
+			filteredQos = models.RecapFilteredQosPerCustomer{
+				ID_Qos:        customerQosData.ID,
+				Customer_Name: customerQosData.Customer_Name,
+				Average_Value: mean,
+				Std_Deviation: stdDeviation,
+				Min_Value:     min,
+				Max_Value:     max,
+				Index_Rating:  index,
+				Category:      category,
+			}
+
+			totalAvg += mean
+			if i == 0 {
+				overallMax = max
+				overallMin = min
+			}
+			if overallMax < max {
+				overallMax = max
+			}
+			if overallMin > min {
+				overallMin = min
+			}
+			collFilteredQos = append(collFilteredQos, filteredQos)
 		}
 
-		mean, err = stats.Mean(values)
+		overallAverage := totalAvg / float64(len(customersQosData))
+		overallAverage, err = stats.Round(overallAverage, 3)
 		if err != nil {
 			log.Println(err)
 			return recap, err
 		}
-		max, err = stats.Max(values)
-		if err != nil {
-			log.Println(err)
-			return recap, err
-		}
-		min, err = stats.Min(values)
-		if err != nil {
-			log.Println(err)
-			return recap, err
-		}
-		stdDeviation, err = stats.StandardDeviationSample(values)
-		if err != nil {
-			log.Println(err)
-			return recap, err
-		}
+		indexQos, categoryQos := rating(qosParam, overallAverage, bandwidth)
 
-		bandwidth = customerQosData.Bandwidth
-		index, category := rating(qosParam, mean, bandwidth)
-
-		filteredQos = models.RecapFilteredQosPerCustomer{
-			ID_Qos:        customerQosData.ID,
-			Customer_Name: customerQosData.Customer_Name,
-			Average_Value: mean,
-			Std_Deviation: stdDeviation,
-			Min_Value:     min,
-			Max_Value:     max,
-			Index_Rating:  index,
-			Category:      category,
+		recap = models.RecapFilteredQos{
+			Qos_Parameter:        qosParam,
+			Unit:                 customersQosData[0].Qos_Dataset[0].Unit,
+			Overall_Average:      overallAverage,
+			Overall_Max_Value:    overallMax,
+			Overall_Min_Value:    overallMin,
+			Index_Rating:         indexQos,
+			Category:             categoryQos,
+			Recap_F_Per_Customer: collFilteredQos,
 		}
-
-		totalAvg += mean
-		if i == 0 {
-			overallMax = max
-			overallMin = min
-		}
-		if overallMax < max {
-			overallMax = max
-		}
-		if overallMin > min {
-			overallMin = min
-		}
-		collFilteredQos = append(collFilteredQos, filteredQos)
-	}
-
-	overallAverage := totalAvg / float64(len(customersQosData))
-	roundedOverallAverage, err := stats.Round(overallAverage, 3)
-	if err != nil {
-		log.Println(err)
-		return recap, err
-	}
-	index, category := rating(qosParam, overallAverage, bandwidth)
-
-	recap = models.RecapFilteredQos{
-		Qos_Parameter:        qosParam,
-		Unit:                 customersQosData[0].Qos_Dataset[0].Unit,
-		Overall_Average:      roundedOverallAverage,
-		Overall_Max_Value:    overallMax,
-		Overall_Min_Value:    overallMin,
-		Index_Rating:         index,
-		Category:             category,
-		Recap_F_Per_Customer: collFilteredQos,
 	}
 
 	return recap, nil
